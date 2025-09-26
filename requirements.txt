@@ -2,7 +2,7 @@ tensorflow==2.20.0
 numpy
 scikit-learn
 matplotlib
-opencv-python
+opencv-python-headless
 jupyter
 nbconvert
 nbclient
