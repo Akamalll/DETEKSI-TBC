@@ -1,0 +1,37 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env*
+*.env
+
+.ipynb_checkpoints/
+
+.DS_Store
+Thumbs.db
+
+logs/
+*.log
+
+# large artifacts
+DATASET/
+exports/
+checkpoints/
+
+.cache/
+*.cache/
+
+.vscode/
+.idea/
+
+.streamlit/
+
+# generated images and models (exclude)
+*.png
+*.jpg
+*.jpeg
+*.keras
+*.h5
+*.pb

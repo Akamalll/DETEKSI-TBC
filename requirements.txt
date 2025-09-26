@@ -1,0 +1,9 @@
+tensorflow==2.20.0
+numpy
+scikit-learn
+matplotlib
+opencv-python
+jupyter
+nbconvert
+nbclient
+
