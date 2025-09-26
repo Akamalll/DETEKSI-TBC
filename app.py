@@ -160,7 +160,7 @@ with col1:
             st.stop()
 
         img = Image.open(uploaded)
-        st.image(img, caption="Input Image", use_column_width=True)
+        st.image(img, caption="Input Image", use_container_width=True)
         
         with st.spinner("Memprediksi..."):
             cls, prob, img_array = predict_image(model, img, threshold)
@@ -210,7 +210,7 @@ with col2:
                 heatmap_color = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
                 overlay = np.uint8(0.4 * heatmap_color + 0.6 * img_cv)
                 
-                st.image(overlay, caption="Grad-CAM Heatmap (Red = High Attention)", use_column_width=True)
+                st.image(overlay, caption="Grad-CAM Heatmap (Red = High Attention)", use_container_width=True)
             else:
                 st.warning("Grad-CAM tidak tersedia untuk model ini")
 
