@@ -15,10 +15,13 @@ Thumbs.db
 logs/
 *.log
 
-# large artifacts
+# large artifacts (tetap ignore saat dev)
 DATASET/
 exports/
 checkpoints/
+
+# simpan model untuk deploy (izinkan folder models/)
+!models/
 
 .cache/
 *.cache/

@@ -1,19 +1,75 @@
 import os, json
+from pathlib import Path
+import requests
 import numpy as np
 import streamlit as st
 import tensorflow as tf
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from PIL import Image
 
-BASE_DIR = r"D:\SKRIPSI\DETEKSI TBC"
-MODEL_PATH = os.path.join(BASE_DIR, "exports", "mobilenetv2_tbc.keras")
-LABELS_PATH = os.path.join(BASE_DIR, "exports", "labels.json")
+BASE_DIR = Path(__file__).parent
+# Kandidat lokasi lokal (relatif repo) untuk model & label
+MODEL_CANDIDATES = [
+    BASE_DIR / "models" / "mobilenetv2_tbc.keras",
+    BASE_DIR / "checkpoints" / "mobilenetv2_tbc_finetuned_best.keras",
+    BASE_DIR / "exports" / "mobilenetv2_tbc.keras",
+]
+LABELS_CANDIDATES = [
+    BASE_DIR / "models" / "labels.json",
+    BASE_DIR / "exports" / "labels.json",
+]
 IMG_SIZE = (224, 224)
+
+def _first_existing(paths):
+    for p in paths:
+        if Path(p).exists():
+            return str(p)
+    return None
+
+@st.cache_resource
+def ensure_artifacts():
+    # 1) Coba file lokal di repo
+    model_path = _first_existing(MODEL_CANDIDATES)
+    labels_path = _first_existing(LABELS_CANDIDATES)
+
+    # 2) Jika tidak ada, coba unduh dari Secrets (MODEL_URL, LABELS_URL)
+    if model_path is None:
+        model_url = st.secrets.get("MODEL_URL")
+        if not model_url:
+            raise FileNotFoundError(
+                f"Model tidak ditemukan di {MODEL_CANDIDATES}. Set MODEL_URL di Secrets atau commit model ke folder models/."
+            )
+        target = BASE_DIR / "models" / "mobilenetv2_tbc.keras"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with requests.get(model_url, stream=True) as r:
+            r.raise_for_status()
+            with open(target, "wb") as f:
+                for chunk in r.iter_content(1 << 20):
+                    if chunk:
+                        f.write(chunk)
+        model_path = str(target)
+
+    if labels_path is None:
+        labels_url = st.secrets.get("LABELS_URL")
+        if not labels_url:
+            raise FileNotFoundError(
+                f"Label tidak ditemukan di {LABELS_CANDIDATES}. Set LABELS_URL di Secrets atau commit labels.json ke folder models/."
+            )
+        target = BASE_DIR / "models" / "labels.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with requests.get(labels_url, stream=True) as r:
+            r.raise_for_status()
+            with open(target, "wb") as f:
+                f.write(r.content)
+        labels_path = str(target)
+
+    return model_path, labels_path
 
 @st.cache_resource
 def load_artifacts():
-    model = tf.keras.models.load_model(MODEL_PATH)
-    with open(LABELS_PATH, "r") as f:
+    model_path, labels_path = ensure_artifacts()
+    model = tf.keras.models.load_model(model_path)
+    with open(labels_path, "r") as f:
         labels = json.load(f)  # e.g. {"0":"normal","1":"tuberculosis"}
     return model, labels
 
