@@ -128,8 +128,8 @@ def generate_gradcam(model, img_array, last_conv_layer_name='Conv_1'):
         pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
         conv_outputs = conv_outputs[0]
         heatmap = tf.reduce_mean(tf.multiply(pooled_grads, conv_outputs), axis=-1)
-        heatmap = np.maximum(heatmap, 0) / (np.max(heatmap) + 1e-8)
-        
+        # Normalize using TensorFlow ops to keep as Tensor, then convert to NumPy
+        heatmap = tf.maximum(heatmap, 0) / (tf.reduce_max(heatmap) + 1e-8)
         return heatmap.numpy()
     except Exception as e:
         st.warning(f"Grad-CAM generation failed: {e}")
