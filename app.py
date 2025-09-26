@@ -77,6 +77,49 @@ def load_artifacts():
         labels = json.load(f)  # e.g. {"0":"normal","1":"tuberculosis"}
     return model, labels
 
+def is_likely_chest_xray(img_pil):
+    """Heuristik ringan untuk memeriksa apakah gambar tampak seperti X-ray dada.
+    Mengembalikan (bool, detail_str)."""
+    try:
+        rgb = np.array(img_pil.convert("RGB"))
+        # Ukuran kecil untuk analisis cepat
+        small = cv2.resize(rgb, (224, 224), interpolation=cv2.INTER_AREA)
+
+        # 1) Saturasi rendah (X-ray dominan grayscale)
+        hsv = cv2.cvtColor(small, cv2.COLOR_RGB2HSV)
+        sat_mean = float(np.mean(hsv[..., 1]) / 255.0)
+
+        # 2) Perbedaan kanal kecil (grayscale): std antar channel rendah
+        channel_std = float(np.mean(np.std(small.astype(np.float32), axis=2)))
+
+        # 3) Ketajaman/struktur (variance of Laplacian)
+        gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
+        lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+        # 4) Kecerahan wajar
+        brightness = float(np.mean(gray))  # 0..255
+
+        reasons = []
+        ok = True
+        if sat_mean > 0.25:
+            ok = False; reasons.append(f"Saturasi tinggi ({sat_mean:.2f})")
+        if channel_std > 18.0:
+            ok = False; reasons.append(f"Perbedaan kanal besar ({channel_std:.1f})")
+        if lap_var < 20.0:
+            ok = False; reasons.append(f"Detail rendah (Laplacian var {lap_var:.1f})")
+        if not (10.0 <= brightness <= 245.0):
+            ok = False; reasons.append(f"Kecerahan ekstrem ({brightness:.1f})")
+
+        detail = (
+            f"sat_mean={sat_mean:.2f}, channel_std={channel_std:.1f}, "
+            f"lap_var={lap_var:.1f}, brightness={brightness:.1f}"
+        )
+        if not ok and not reasons:
+            reasons.append("Pola tidak menyerupai X-ray")
+        return ok, ("; ".join(reasons) + f" | {detail}") if not ok else detail
+    }except Exception as e:
+        return False, f"Deteksi gagal: {e}"
+
 def predict_image(model, img_pil, threshold=0.5):
     img = img_pil.convert("RGB").resize(IMG_SIZE)
     x = np.array(img, dtype=np.float32)
@@ -161,6 +204,19 @@ with col1:
 
         img = Image.open(uploaded)
         st.image(img, caption="Input Image", use_container_width=True)
+
+        # Validasi: cek apakah gambar tampak seperti X-ray
+        ok_xray, xray_detail = is_likely_chest_xray(img)
+        if not ok_xray:
+            st.warning(
+                "Gambar tidak terdeteksi sebagai X-ray dada. "
+                "Pastikan mengunggah foto X-ray dada."
+            )
+            with st.expander("Detail deteksi"):
+                st.code(xray_detail)
+            proceed = st.checkbox("Tetap lanjut prediksi (override)", value=False)
+            if not proceed:
+                st.stop()
         
         with st.spinner("Memprediksi..."):
             cls, prob, img_array = predict_image(model, img, threshold)
