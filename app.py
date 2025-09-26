@@ -117,7 +117,7 @@ def is_likely_chest_xray(img_pil):
         if not ok and not reasons:
             reasons.append("Pola tidak menyerupai X-ray")
         return ok, ("; ".join(reasons) + f" | {detail}") if not ok else detail
-    }except Exception as e:
+    except Exception as e:
         return False, f"Deteksi gagal: {e}"
 
 def predict_image(model, img_pil, threshold=0.5):
