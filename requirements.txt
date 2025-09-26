@@ -6,4 +6,7 @@ opencv-python
 jupyter
 nbconvert
 nbclient
-
+streamlit
+pillow
+requests
+pathlib

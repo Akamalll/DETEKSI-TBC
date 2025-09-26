@@ -6,10 +6,14 @@ import streamlit as st
 import tensorflow as tf
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from PIL import Image
+import cv2
+import matplotlib.pyplot as plt
+import io
 
 BASE_DIR = Path(__file__).parent
 # Kandidat lokasi lokal (relatif repo) untuk model & label
 MODEL_CANDIDATES = [
+    BASE_DIR / "models" / "mobilenetv2_tbc_finetuned_best.keras",  # Prioritas fine-tuned
     BASE_DIR / "models" / "mobilenetv2_tbc.keras",
     BASE_DIR / "checkpoints" / "mobilenetv2_tbc_finetuned_best.keras",
     BASE_DIR / "exports" / "mobilenetv2_tbc.keras",
@@ -73,44 +77,143 @@ def load_artifacts():
         labels = json.load(f)  # e.g. {"0":"normal","1":"tuberculosis"}
     return model, labels
 
-def predict_image(model, img_pil):
+def predict_image(model, img_pil, threshold=0.5):
     img = img_pil.convert("RGB").resize(IMG_SIZE)
     x = np.array(img, dtype=np.float32)
     x = np.expand_dims(x, axis=0)
     x = preprocess_input(x)  # sama seperti training
     prob = float(model.predict(x, verbose=0)[0, 0])
-    cls = 1 if prob >= 0.5 else 0
-    return cls, prob
+    cls = 1 if prob >= threshold else 0
+    return cls, prob, x[0]  # Return original image array for Grad-CAM
 
-st.set_page_config(page_title="Deteksi TBC - MobileNetV2", page_icon="🫁")
+def generate_gradcam(model, img_array, last_conv_layer_name='Conv_1'):
+    """Generate Grad-CAM heatmap for the input image"""
+    try:
+        # Find the base model (MobileNetV2) within the model
+        base_in_graph = None
+        for lyr in model.layers:
+            if hasattr(lyr, 'layers') and len(getattr(lyr, 'layers', [])) > 0:
+                base_in_graph = lyr
+                break
+        
+        if base_in_graph is None:
+            return None
+            
+        # Get the last conv layer
+        try:
+            last_conv_layer = base_in_graph.get_layer(last_conv_layer_name)
+        except ValueError:
+            last_conv_layer_name = 'out_relu'
+            last_conv_layer = base_in_graph.get_layer(last_conv_layer_name)
+        
+        # Build grad model
+        base_input = base_in_graph.input
+        conv_target = last_conv_layer.output
+        x_head = base_in_graph.output
+        
+        # Reconstruct head layers
+        start_idx = [i for i, lyr in enumerate(model.layers) if lyr is base_in_graph][0] + 1
+        for lyr in model.layers[start_idx:]:
+            x_head = lyr(x_head)
+        
+        grad_model = tf.keras.models.Model(inputs=base_input, outputs=[conv_target, x_head])
+        
+        # Generate Grad-CAM
+        img_batch = np.expand_dims(img_array, axis=0)
+        with tf.GradientTape() as tape:
+            conv_outputs, predictions = grad_model(img_batch, training=False)
+            loss = predictions[:, 0]
+        
+        grads = tape.gradient(loss, conv_outputs)
+        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+        conv_outputs = conv_outputs[0]
+        heatmap = tf.reduce_mean(tf.multiply(pooled_grads, conv_outputs), axis=-1)
+        heatmap = np.maximum(heatmap, 0) / (np.max(heatmap) + 1e-8)
+        
+        return heatmap.numpy()
+    except Exception as e:
+        st.warning(f"Grad-CAM generation failed: {e}")
+        return None
+
+st.set_page_config(page_title="Deteksi TBC - MobileNetV2", page_icon="🫁", layout="wide")
 st.title("🫁 Deteksi Tuberkulosis (X-ray Dada)")
 
-# Kontrol sensitivitas (threshold) di sidebar
+# Sidebar controls
+st.sidebar.header("⚙️ Pengaturan")
 threshold = st.sidebar.slider("Threshold positif TBC", 0.0, 1.0, 0.25, 0.01)
-st.info("Unggah gambar X-ray untuk mulai melakukan prediksi.")
+show_gradcam = st.sidebar.checkbox("Tampilkan Grad-CAM", value=True)
+model_choice = st.sidebar.selectbox("Model", ["Fine-tuned (Recommended)", "Baseline"])
 
-uploaded = st.file_uploader("Unggah gambar X-ray (.png/.jpg)", type=["png", "jpg", "jpeg"])
-if uploaded is not None:
-    try:
-        with st.spinner("Memuat model..."):
-            model, LABEL_MAP = load_artifacts()
-    except Exception as e:
-        st.error(f"Gagal memuat model/label: {e}")
-        st.stop()
+# Main content
+col1, col2 = st.columns([1, 1])
 
-    img = Image.open(uploaded)
-    st.image(img, caption="Input", use_column_width=True)
-    with st.spinner("Memprediksi..."):
-        cls_tmp, prob = predict_image(model, img)
-        cls = 1 if prob >= threshold else 0
-    # Normalisasi akses label map
-    try:
-        cls_name = LABEL_MAP[str(cls)] if isinstance(LABEL_MAP, dict) else ("tuberculosis" if cls == 1 else "normal")
-    except Exception:
-        # Fallback jika label map berupa {0:"normal",1:"tuberculosis"} dengan key int
-        cls_name = LABEL_MAP.get(cls, "tuberculosis" if cls == 1 else "normal") if isinstance(LABEL_MAP, dict) else ("tuberculosis" if cls == 1 else "normal")
-    st.subheader(f"Hasil: {cls_name}")
-    st.write(f"Probabilitas (positif): {prob:.4f}")
-    st.write(f"Threshold: {threshold:.2f}")
+with col1:
+    st.header("📤 Upload Gambar")
+    uploaded = st.file_uploader("Unggah gambar X-ray (.png/.jpg)", type=["png", "jpg", "jpeg"])
+    
+    if uploaded is not None:
+        try:
+            with st.spinner("Memuat model..."):
+                model, LABEL_MAP = load_artifacts()
+        except Exception as e:
+            st.error(f"Gagal memuat model/label: {e}")
+            st.stop()
 
-st.caption("Model: MobileNetV2, preprocessing: mobilenet_v2.preprocess_input")
+        img = Image.open(uploaded)
+        st.image(img, caption="Input Image", use_column_width=True)
+        
+        with st.spinner("Memprediksi..."):
+            cls, prob, img_array = predict_image(model, img, threshold)
+        
+        # Normalize label map access
+        try:
+            cls_name = LABEL_MAP[str(cls)] if isinstance(LABEL_MAP, dict) else ("tuberculosis" if cls == 1 else "normal")
+        except Exception:
+            cls_name = LABEL_MAP.get(cls, "tuberculosis" if cls == 1 else "normal") if isinstance(LABEL_MAP, dict) else ("tuberculosis" if cls == 1 else "normal")
+
+with col2:
+    if uploaded is not None:
+        st.header("📊 Hasil Prediksi")
+        
+        # Confidence visualization
+        confidence = prob if cls == 1 else (1 - prob)
+        st.metric("Kelas Prediksi", cls_name, f"{confidence:.1%} confidence")
+        
+        # Probability bar
+        st.progress(prob)
+        st.caption(f"Probabilitas TBC: {prob:.4f}")
+        st.caption(f"Threshold: {threshold:.2f}")
+        
+        # Risk assessment
+        if cls == 1:
+            if prob > 0.8:
+                st.error("🔴 Risiko Tinggi - Konsultasi segera diperlukan")
+            elif prob > 0.5:
+                st.warning("🟡 Risiko Sedang - Perlu evaluasi lebih lanjut")
+            else:
+                st.info("🟢 Risiko Rendah - Tetap pantau kondisi")
+        else:
+            st.success("✅ Normal - Tidak terdeteksi tanda TBC")
+        
+        # Grad-CAM visualization
+        if show_gradcam:
+            st.header("🔍 Grad-CAM Analysis")
+            with st.spinner("Generating heatmap..."):
+                heatmap = generate_gradcam(model, img_array)
+            
+            if heatmap is not None:
+                # Create overlay
+                img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                img_cv = cv2.resize(img_cv, IMG_SIZE)
+                heatmap_resized = cv2.resize(heatmap, IMG_SIZE)
+                heatmap_color = cv2.applyColorMap(np.uint8(255 * heatmap_resized), cv2.COLORMAP_JET)
+                heatmap_color = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
+                overlay = np.uint8(0.4 * heatmap_color + 0.6 * img_cv)
+                
+                st.image(overlay, caption="Grad-CAM Heatmap (Red = High Attention)", use_column_width=True)
+            else:
+                st.warning("Grad-CAM tidak tersedia untuk model ini")
+
+# Footer
+st.markdown("---")
+st.caption("Model: MobileNetV2 Fine-tuned | Preprocessing: mobilenet_v2.preprocess_input | Framework: TensorFlow + Streamlit")
